@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
 
 @Service
@@ -21,9 +22,8 @@ public class JwtService {
 
     public JwtService(
             @Value("${app.jwt.secret}") String secret,
-            @Value("${app.jwt.expiration-minutes:120}") long expirationMinutes
+            @Value("${app.jwt.expiration-minutes:60}") long expirationMinutes
     ) {
-        // En HS256 la clave debe tener mínimo 32 caracteres
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expirationMillis = expirationMinutes * 60_000L;
     }
@@ -33,19 +33,30 @@ public class JwtService {
         Date exp = new Date(now.getTime() + expirationMillis);
 
         return Jwts.builder()
-                .subject(email)
-                .claim("role", role)
-                .issuedAt(now)
-                .expiration(exp)
-                .signWith(key) // JJWT 0.12.x
+                .setSubject(email)
+                .claim("role", normalizeRole(role)) // USER o ADMIN
+                .setIssuedAt(now)
+                .setExpiration(exp)
+                .signWith(key, SignatureAlgorithm.HS256)
                 .compact();
     }
 
     public Jws<Claims> parse(String token) {
-        // JJWT 0.12.x
-        return Jwts.parser()
-                .verifyWith(key)
+        return Jwts.parserBuilder()
+                .setSigningKey(key)
                 .build()
-                .parseSignedClaims(token);
+                .parseClaimsJws(token);
+    }
+
+    private String normalizeRole(String role) {
+        if (role == null) return "USER";
+        String r = role.trim().toUpperCase();
+        if (r.startsWith("ROLE_")) {
+            r = r.substring(5);
+        }
+        if (!r.equals("USER") && !r.equals("ADMIN")) {
+            r = "USER";
+        }
+        return r;
     }
 }

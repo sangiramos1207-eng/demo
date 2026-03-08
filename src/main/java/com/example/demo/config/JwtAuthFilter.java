@@ -1,21 +1,23 @@
 package com.example.demo.config;
 
-import java.io.IOException;
 import java.util.List;
 
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContextImpl;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
 
 import io.jsonwebtoken.Claims;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import reactor.core.publisher.Mono;
 
-public class JwtAuthFilter extends OncePerRequestFilter {
+@Component
+public class JwtAuthFilter implements WebFilter {
 
     private final JwtService jwtService;
 
@@ -24,32 +26,43 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws ServletException, IOException {
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
 
-        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+        String path = exchange.getRequest().getURI().getPath();
 
-        if (header != null && header.startsWith("Bearer ")) {
-            String token = header.substring(7);
-            try {
-                // ✅ JJWT 0.12.x -> getPayload()
-                Claims claims = jwtService.parse(token).getPayload();
-                String email = claims.getSubject();
-                String role = String.valueOf(claims.get("role"));
-
-                var auth = new UsernamePasswordAuthenticationToken(
-                        email,
-                        null,
-                        List.of(new SimpleGrantedAuthority("ROLE_" + role))
-                );
-
-                SecurityContextHolder.getContext().setAuthentication(auth);
-
-            } catch (Exception ignored) {
-                // token inválido -> no autenticamos
-            }
+        if (path.startsWith("/api/auth/")) {
+            return chain.filter(exchange);
         }
 
-        filterChain.doFilter(request, response);
+        ServerHttpRequest request = exchange.getRequest();
+        String header = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+
+        if (header == null || !header.startsWith("Bearer ")) {
+            return chain.filter(exchange);
+        }
+
+        String token = header.substring(7);
+
+        try {
+            Claims claims = jwtService.parse(token).getBody();
+
+            String email = claims.getSubject();
+            String role = String.valueOf(claims.get("role"));
+            String authority = role.startsWith("ROLE_") ? role : "ROLE_" + role;
+
+            var authentication = new UsernamePasswordAuthenticationToken(
+                    email,
+                    null,
+                    List.of(new SimpleGrantedAuthority(authority))
+            );
+
+            var context = new SecurityContextImpl(authentication);
+
+            return chain.filter(exchange)
+                    .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(context)));
+
+        } catch (Exception e) {
+            return chain.filter(exchange);
+        }
     }
 }
